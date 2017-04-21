@@ -402,7 +402,7 @@ bypol.eddy <- function(eddy.file, coor.dat, polygons.dat, cyclonic = TRUE, reloc
     ## Lybraries
     library(sp)
     ## Tools
-    source('/home/demiurgo/Documents/2015/Atlantis_Model/tools/Atlantis_tools.R')
+    source('/home/demiurgo/Documents/PhD/Atlantis_Model/tools/General_tools/Atlantis_tools.R')
     ## load data
     load(coor.dat)
     load(eddy.file)
@@ -432,6 +432,7 @@ bypol.eddy <- function(eddy.file, coor.dat, polygons.dat, cyclonic = TRUE, reloc
     ## Loop to classified the eddies by polygons
     t.eddy <- matrix()
     for( i in 1 : nrow(polygons$attrib)){
+        browser()
         ## loop throught the polygons
         Summer <- Spring <- Winter <- Fall <- list(NA)
         for(j in 1 : length(n.list)){
@@ -572,4 +573,147 @@ sigma2zeta <- function(h, hc, theta, b, N){
     C = (1 - b) * A + b * B;
     z = hc * s + (h - hc) * C;
     return(z)
+}
+##' .. content for \description{} (no empty lines) ..
+##'
+##' .. content for \details{} ..
+##' @title Calculate the number of eddies by box and timestep
+##' @param eddy.file R.data file with the lat lon information
+##' @param coor.dat Coordinates data file
+##' @param polygons.dat Polygons information
+##' @param cyclonic Type of eddie
+##' @return A matrix array(box, time) with the number of eddies by box
+##' @author Demiurgo
+calc.edd <- function(eddy.file, coor.dat, polygons.dat, cyclonic = FALSE, t.time, by.area = FALSE){
+    ## Lybraries
+    library(sp)
+    ## Tools
+    source('/home/demiurgo/Documents/PhD/Atlantis_Model/tools/General_tools/Atlantis_tools.R')
+    ## load data
+    load(coor.dat)
+    load(eddy.file)
+    if(isTRUE(cyclonic)){
+        eddies.track <- cic.track.eddies
+    } else {
+        eddies.track <- ant.track.eddies
+    }
+    polygons <- read.poly(polygons.dat)
+    lat.mod  <- coord[[2]]
+    lon.mod  <- coord[[1]]
+    lon      <- as.matrix(polygons$coor[, c(seq(from = 1, to = dim(polygons$coor)[2], by = 2))])
+    lat      <- as.matrix(polygons$coor[, c(seq(from = 2, to = dim(polygons$coor)[2], by = 2))])
+    ##Counting the eddies
+    n.list <- do.call(rbind.data.frame,lapply(eddies.track, function(x) data.frame(Time=x[,1], lat = lat.mod[x[, 3]], lon = lon.mod[x[, 4]])))
+    out    <- array(0, dim = c(nrow(polygons$attrib), t.time))
+    for(b in 1 : nrow(polygons$attrib)){
+        poly   <- na.omit(cbind(lon[b, ], lat[b, ]))
+        in.pol <- point.in.polygon(n.list[, 'lat'], n.list[, 'lon'],  poly[, 1], poly[, 2])
+        if(any(in.pol > 0)){
+            pos <- which(in.pol == 1)
+            out[b, n.list$Time[pos]] <- out[b, n.list$Time[pos]] + 1
+        }
+    }
+    out[which(out == 0)] <- NA
+    if(by.area){
+        out <- apply(out, 2, function(x) x / polygons$attrib$area)
+        out <- (out / mean(out, na.rm = TRUE))
+    }
+    out[which(is.na(out))] <- 0
+    out <- out + 1
+    out <- out[order(polygons$attrib$box_id), ]
+    return(out)
+}
+##' .. content for \description{} (no empty lines) ..
+##'
+##' .. content for \details{} ..
+##' @title Create the Netcdf file for eddies
+##' @param bgm.file ## BGm file from atlatnis
+##' @param cum.depths Cummulative depths of the layers
+##' @param total.edd Matrix with the number of eddies by box (rows) by time step (cols)
+##' @param nc.file Name of the ncfile outpur
+##' @return nc.file saved
+##' @author Demiurgo
+make.eddy.nc <- function(bgm.file, cum.depths, total.edd, nc.file) {
+    library(ncdf4)
+    map.data    <- box.dat(bgm.file, cum.depths)
+    numlayers   <- length(cum.depths) - 1
+    layer.depth <- rep(0, numlayers)
+    numboxes    <- nrow(map.data)
+    b.vals      <- 1 : numboxes
+    z.vals      <- 1 : (numlayers + 1)
+    ## build variables
+    time      <- seq(from = 0, by = 432000, length = ncol(total.edd))
+    ## create dimensions stored in the NetCDF file
+    dim1 <- ncdim_def( # create a time dimension
+        name  = 't',
+        units = 'seconds since 2000-01-01 00:00:00 +10',
+        unlim = TRUE,
+        vals  = as.double(time)
+    )
+    dim2 <- ncdim_def( # create a box dimension
+        name  = 'b',
+        units = '(none)',
+        vals  = b.vals
+    )
+    dim3 <- ncdim_def( # create a depth layer dimension
+        name  = 'z',
+        units = '(none)',
+        vals  = z.vals
+    )
+    ## create Variables
+    vars <- list()
+    vars[[1]] <- ncvar_def(name     = 'eddy',
+                           units    = '',
+                           dim      = list(dim2, dim1) ,
+                           longname = 'Number of eddies',
+                           missval  =  0,
+                           prec     = 'double')
+    if (file.exists(nc.file)) {
+        file.remove(nc.file)
+    }
+    ## create a NetCDF file
+    outnc <- nc_create(filename = nc.file, vars = vars[[1]], force_v4 = TRUE)
+    ## Global variables
+    ncatt_put(nc = outnc, varid = 0, attname = 'geometry', attval = bgm.file)
+    ncatt_put(nc = outnc, varid = 0, attname = 'title', attval = "JFRE eddies field")
+    ncatt_put(nc = outnc, varid = 0, attname = 'parameters', attval = "")
+    ncatt_put(nc = outnc, varid = 'eddy', attname = 'valid_min', attval = 0)
+    ncatt_put(nc = outnc, varid = 'eddy', attname = 'valid_max', attval = 100)
+    ncatt_put(nc = outnc, varid = 'eddy', attname = 'missing_value', attval = -999)
+    ncatt_put(nc = outnc, varid = 't', attname = 'dt', attval = 432000)
+    ncvar_put(nc = outnc, varid = 'eddy', vals = total.edd)
+    nc_close(outnc)
+    cat('\n\nNetCDF file :  -', nc.file, '- saved\n' )
+}
+
+##' .. content for \description{} (no empty lines) ..
+##'
+##' .. content for \details{} ..
+##' @title Information of boxes and layers
+##' @param bgm.file BGM file for atlantis
+##' @param cum.depths cummulative depth
+##' @return A data.frame with the layers information
+##' @author Demiurgo
+box.dat <- function(bgm.file, cum.depths){
+    bgm         <- readLines(bgm.file) # read in the geometry file
+    nboxes      <- as.numeric(unlist(strsplit(bgm[grep("nbox", bgm, value = FALSE)],"[\t ]+"))[2])
+    box.indices <- rep(0, nboxes)
+    for(i in 1:nboxes){ # box depth
+        box.indices[i] <- grep(paste("box", i - 1, ".botz", sep = ""), bgm)
+    }
+    z.tmp              <- strsplit(bgm[box.indices], "\t")
+    z                  <- as.numeric(sapply(z.tmp,`[`,2)) # - depth of water column
+    ## create a data frame to store box data
+    box.data <- data.frame(boxid = 0 : (nboxes - 1), total.depth = -z)
+    ## add island information
+    box.data$is.island   <- as.numeric(box.data$total.depth <= 0.0)
+    box.numlayers        <- rep(0, nboxes) # vector containing number of water layers
+    for (i in 1: nboxes) {
+        box.numlayers[i] <- sum(box.data$total.depth[i] > cum.depths)
+    }
+    max.numlayers                       <- length(cum.depths) - 1
+    box.numlayers[is.na(box.numlayers)] <- 0 # non-water boxes
+    box.numlayers                       <- pmin(box.numlayers, max.numlayers) # bound by maximum depth
+    box.data$numlayers                  <- box.numlayers # add the vector to box.data
+    return(box.data)
 }
